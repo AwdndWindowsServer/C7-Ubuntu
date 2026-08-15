@@ -1,0 +1,151 @@
+name: Build C7 mainline Ubuntu (system + boot) one-shot
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: 'msm8953-mainline kernel branch'
+        required: false
+        default: '6.16.3/main'
+        type: string
+      distro:
+        description: 'Ubuntu codename'
+        required: false
+        default: 'resolute'
+        type: string
+      rootfs_size_gb:
+        description: 'rootfs.img size in GB'
+        required: false
+        default: '6'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu device-tree-compiler \
+            bison flex libssl-dev libdw-dev libelf-dev dpkg-dev \
+            mkbootimg fakeroot bc kmod cpio \
+            debootstrap qemu-user-static binfmt-support \
+            android-sdk-libsparse-utils squashfs-tools \
+            zstd xz-utils rsync
+          sudo apt-get install -y python3 python3-mako
+
+      - name: Clone msm8953-mainline kernel
+        run: |
+          git clone --depth 1 -b "${{ inputs.kernel_branch }}" \
+            https://github.com/msm8953-mainline/linux.git linux
+
+      - name: Copy C7 device tree + kernel config
+        run: |
+          cp device-dts/qcom/msm8953.dtsi linux/arch/arm64/boot/dts/qcom/
+          cp device-dts/qcom/pm8953.dtsi linux/arch/arm64/boot/dts/qcom/
+          cp device-dts/qcom/msm8953-samsung-c7lte.dts linux/arch/arm64/boot/dts/qcom/
+          if ! grep -q "msm8953-samsung-c7lte" linux/arch/arm64/boot/dts/qcom/Makefile; then
+            sed -i '/msm8953-motorola-potter.dtb/a\dtb-$(CONFIG_ARCH_QCOM)\t+= msm8953-samsung-c7lte.dtb' \
+              linux/arch/arm64/boot/dts/qcom/Makefile
+          fi
+          sed 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="-c7-mainline"/' \
+            config/msm8953-mainline.config > linux/.config
+          cd linux
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+
+      - name: Build kernel (Image + dtb + deb)
+        run: |
+          cd linux
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            qcom/msm8953-samsung-c7lte.dtb
+          mkdir -p ../out
+          cp arch/arm64/boot/Image ../out/
+          cp arch/arm64/boot/dts/qcom/msm8953-samsung-c7lte.dtb ../out/
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            bindeb-pkg -j$(nproc) || echo "bindeb-pkg 失败，继续用已编译 Image"
+          cp -f ../linux-image-*.deb ../linux-headers-*.deb ../out/ 2>/dev/null || true
+
+      - name: Extract C7 vendor firmware
+        run: |
+          mkdir -p firmware-c7
+          if [ -d vendor/extract/c7ltechn/system/vendor/firmware ]; then
+            cp -a vendor/extract/c7ltechn/system/vendor/firmware/* firmware-c7/ 2>/dev/null || true
+          fi
+          find firmware-c7 -type f | head -20 || true
+
+      - name: Create rootfs.img and debootstrap Ubuntu
+        run: |
+          ROOTFS_GB=${{ inputs.rootfs_size_gb }}
+          dd if=/dev/zero of=rootfs.img bs=1G count=$ROOTFS_GB
+          mkfs.ext4 rootfs.img
+          mkdir -p mp
+          sudo mount rootfs.img mp
+          echo "debootstrap: ubuntu ${{ inputs.distro }} arm64 (tuna)"
+          sudo debootstrap --arch arm64 \
+            --components=main,restricted,universe,multiverse \
+            --variant=minbase \
+            ${{ inputs.distro }} ./mp \
+            https://mirrors.tuna.tsinghua.edu.cn/ubuntu/
+          sudo umount mp
+
+      - name: Configure rootfs in chroot
+        run: |
+          sudo bash -c '
+            set -e
+            mkdir -p mp
+            mount rootfs.img mp
+            mount --bind /proc mp/proc
+            mount --bind /dev mp/dev
+            mount --bind /dev/pts mp/dev/pts
+            mount --bind /sys mp/sys
+            cp -r firmware-c7/* mp/lib/firmware/ 2>/dev/null || true
+            cp out/*.deb mp/tmp/ 2>/dev/null || true
+            cp scripts/configure-chroot.sh mp/configure-chroot.sh
+            DISTRO="$1" chroot mp /bin/bash /configure-chroot.sh
+            cp mp/boot/initrd.img* out/ 2>/dev/null || true
+            cp -r mp/boot/vmlinuz* out/ 2>/dev/null || true
+            umount mp/sys mp/dev/pts mp/dev mp/proc mp
+          ' _ "${{ inputs.distro }}"
+
+      - name: Package boot.img
+        run: |
+          set -e
+          KIMG=out/Image
+          DTB=out/msm8953-samsung-c7lte.dtb
+          INITRD=$(ls out/initrd.img* 2>/dev/null | head -1)
+          if [ -n "$INITRD" ]; then
+            RAMDISK="$INITRD"
+          else
+            mkdir -p emptyram
+            ( cd emptyram && find . -print0 | cpio --null -o --format=newc | gzip -9 ) > out/initrd-empty.img
+            RAMDISK=out/initrd-empty.img
+          fi
+          cat "$KIMG" "$DTB" > out/kernel-dtb
+          mkbootimg \
+            --base 0x80000000 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --pagesize 2048 \
+            --second_offset 0x00f00000 \
+            --ramdisk "$RAMDISK" \
+            --cmdline "console=tty0 root=UUID=CHANGEME rw loglevel=3 splash" \
+            --kernel out/kernel-dtb -o out/boot.img
+          img2simg rootfs.img out/rootfs-simg.img
+          ls -lh out/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: c7-ubuntu-${{ inputs.distro }}
+          path: |
+            out/boot.img
+            out/rootfs-simg.img
+            out/msm8953-samsung-c7lte.dtb
+            out/Image

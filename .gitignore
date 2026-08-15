@@ -1,0 +1,23 @@
+# 构建产物
+/android/
+.ccache/
+build.log
+
+*.zip
+*.img
+*.dat
+*.dat.br
+*.tar.gz
+
+# MIUI 10 移植本地源码目录
+android-miui10/
+log/
+__pycache__/
+*.pyc
+.work/
+
+# 大目录 / 内核源码（不纳入版本控制）
+/los-kernel/
+/c7stock-kernel/
+/linux-mainline/
+/vendor/
