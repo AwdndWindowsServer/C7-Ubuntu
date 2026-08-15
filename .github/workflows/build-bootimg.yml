@@ -30,10 +30,11 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
+          sudo apt-get remove -y mkbootimg 2>/dev/null || true
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu device-tree-compiler \
             bison flex libssl-dev libdw-dev libelf-dev dpkg-dev \
-            mkbootimg fakeroot bc kmod cpio \
+            fakeroot bc kmod cpio \
             debootstrap qemu-user-static binfmt-support \
             android-sdk-libsparse-utils squashfs-tools \
             zstd xz-utils rsync
@@ -41,6 +42,10 @@ jobs:
           # 注册 arm64 binfmt，chroot 时才能执行 aarch64 二进制
           sudo update-binfmts --enable qemu-aarch64 2>/dev/null || true
           sudo systemctl restart binfmt-support 2>/dev/null || true
+          # mkbootimg 用仓库自带脚本（避免 apt 新版依赖 gki 模块）
+          sudo ln -sf /usr/bin/python3 /usr/local/bin/python3
+          sudo cp tools/mkbootimg.py /usr/local/bin/mkbootimg
+          sudo chmod +x /usr/local/bin/mkbootimg
 
       - name: Clone msm8953-mainline kernel
         run: |
