@@ -27,18 +27,11 @@ apt-get install -y \
   python3 iptables rfkill alsa-ucm-conf \
   u-boot-tools zstd
 
+shopt -s nullglob
 for f in /tmp/linux-image-*.deb; do
   case "$f" in *dbg*) continue;; esac
   dpkg -i "$f" || apt-get -f install -y
 done
-
-cat >> /etc/initramfs-tools/modules << 'MODULES'
-qcom_smem
-qcom_smd
-msm
-panel_samsung_s6e3fa3
-edt_ft5x06
-MODULES
 
 update-initramfs -u
 apt-get clean

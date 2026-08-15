@@ -38,6 +38,9 @@ jobs:
             android-sdk-libsparse-utils squashfs-tools \
             zstd xz-utils rsync
           sudo apt-get install -y python3 python3-mako
+          # 注册 arm64 binfmt，chroot 时才能执行 aarch64 二进制
+          sudo update-binfmts --enable qemu-aarch64 2>/dev/null || true
+          sudo systemctl restart binfmt-support 2>/dev/null || true
 
       - name: Clone msm8953-mainline kernel
         run: |
@@ -74,24 +77,30 @@ jobs:
       - name: Extract C7 vendor firmware
         run: |
           mkdir -p firmware-c7
+          # 仓库不携带固件时跳过（firmware 由 rootfs 里 firmware 包或用户自行补充）
           if [ -d vendor/extract/c7ltechn/system/vendor/firmware ]; then
             cp -a vendor/extract/c7ltechn/system/vendor/firmware/* firmware-c7/ 2>/dev/null || true
           fi
           find firmware-c7 -type f | head -20 || true
-
       - name: Create rootfs.img and debootstrap Ubuntu
         run: |
+          set -e
           ROOTFS_GB=${{ inputs.rootfs_size_gb }}
           dd if=/dev/zero of=rootfs.img bs=1G count=$ROOTFS_GB
           mkfs.ext4 rootfs.img
           mkdir -p mp
           sudo mount rootfs.img mp
+          # chroot 执行 arm64 二进制需要 qemu 静态模拟器
+          sudo mkdir -p mp/usr/bin
+          sudo cp /usr/bin/qemu-aarch64-static mp/usr/bin/
           echo "debootstrap: ubuntu ${{ inputs.distro }} arm64 (tuna)"
-          sudo debootstrap --arch arm64 \
+          sudo debootstrap --foreign --arch arm64 \
             --components=main,restricted,universe,multiverse \
             --variant=minbase \
             ${{ inputs.distro }} ./mp \
             https://mirrors.tuna.tsinghua.edu.cn/ubuntu/
+          # 第二阶段：在 chroot 内用 qemu 完成配置
+          sudo chroot mp /debootstrap/debootstrap --second-stage
           sudo umount mp
 
       - name: Configure rootfs in chroot
@@ -100,11 +109,16 @@ jobs:
             set -e
             mkdir -p mp
             mount rootfs.img mp
+            # 保留 qemu 供 chroot 使用
+            cp /usr/bin/qemu-aarch64-static mp/usr/bin/
             mount --bind /proc mp/proc
             mount --bind /dev mp/dev
             mount --bind /dev/pts mp/dev/pts
             mount --bind /sys mp/sys
-            cp -r firmware-c7/* mp/lib/firmware/ 2>/dev/null || true
+            if [ -n "$(ls -A firmware-c7 2>/dev/null)" ]; then
+              cp -r firmware-c7/* mp/lib/firmware/ 2>/dev/null || true
+            fi
+            shopt -s nullglob
             cp out/*.deb mp/tmp/ 2>/dev/null || true
             cp scripts/configure-chroot.sh mp/configure-chroot.sh
             DISTRO="$1" chroot mp /bin/bash /configure-chroot.sh
@@ -126,6 +140,9 @@ jobs:
             ( cd emptyram && find . -print0 | cpio --null -o --format=newc | gzip -9 ) > out/initrd-empty.img
             RAMDISK=out/initrd-empty.img
           fi
+          # 用 rootfs.img 的真实 UUID 作为启动参数
+          ROOT_UUID=$(/sbin/blkid -o value -s UUID rootfs.img)
+          echo "rootfs UUID: $ROOT_UUID"
           cat "$KIMG" "$DTB" > out/kernel-dtb
           mkbootimg \
             --base 0x80000000 \
@@ -135,7 +152,7 @@ jobs:
             --pagesize 2048 \
             --second_offset 0x00f00000 \
             --ramdisk "$RAMDISK" \
-            --cmdline "console=tty0 root=UUID=CHANGEME rw loglevel=3 splash" \
+            --cmdline "console=tty0 root=UUID=$ROOT_UUID rw loglevel=3 splash" \
             --kernel out/kernel-dtb -o out/boot.img
           img2simg rootfs.img out/rootfs-simg.img
           ls -lh out/
