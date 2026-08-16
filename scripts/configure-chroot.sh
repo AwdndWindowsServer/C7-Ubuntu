@@ -20,16 +20,14 @@ APTSRC
 apt-get update -y
 apt-get install -y \
   apt-transport-https ca-certificates \
-  systemd systemd-timesyncd initramfs-tools \
-  network-manager openssh-server \
-  bash-completion vim tmux locales locales-all \
-  file usbutils sudo \
-  python3 iptables rfkill alsa-ucm-conf \
-  u-boot-tools zstd
+  initramfs-tools kmod systemd \
+  zstd file
 
-# 直接拷入的内核：vmlinuz-<ver> + dtb-<ver> + /lib/modules/<ver>
-# 为 initramfs 生成 modules.dep
-depmod -a 2>/dev/null || true
+shopt -s nullglob
+for f in /tmp/linux-image-*.deb; do
+  case "$f" in *dbg*) continue;; esac
+  dpkg -i "$f" || apt-get -f install -y
+done
 
 # 确保内核已安装，否则 update-initramfs 无内核可用
 if ! ls /boot/vmlinuz-* >/dev/null 2>&1; then
