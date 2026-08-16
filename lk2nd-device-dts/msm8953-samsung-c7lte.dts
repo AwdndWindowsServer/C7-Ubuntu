@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+/dts-v1/;
+
+#include <skeleton64.dtsi>
+#include <lk2nd.dtsi>
+
+/ {
+	qcom,msm-id = <QCOM_ID_MSM8953 0>;
+	qcom,board-id = <8 0>,
+			<8 1>,
+			<8 2>,
+			<8 3>,
+			<8 4>;
+};
+
+&lk2nd {
+	model = "Samsung Galaxy C7 (c7ltechn)";
+	compatible = "samsung,c7lte";
+
+	lk2nd,dtb-files = "qcom/msm8953-samsung-c7lte";
+
+	panel {
+		compatible = "samsung,c7lte-panel", "lk2nd,panel";
+
+		qcom,mdss_dsi_s6e3fa3_ams568hn31_fhd {
+			compatible = "samsung,s6e3fa3-ams568hn31";
+		};
+	};
+};
