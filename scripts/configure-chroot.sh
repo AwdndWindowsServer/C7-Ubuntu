@@ -33,6 +33,18 @@ for f in /tmp/linux-image-*.deb; do
   dpkg -i "$f" || apt-get -f install -y
 done
 
+# 确保内核已安装，否则 update-initramfs 无内核可用
+if ! ls /boot/vmlinuz-* >/dev/null 2>&1; then
+  echo "ERROR: no kernel installed in chroot" >&2
+  ls /tmp/*.deb >&2 2>/dev/null || true
+  exit 1
+fi
+
 update-initramfs -u
+if ! ls /boot/initrd.img-* >/dev/null 2>&1; then
+  echo "ERROR: update-initramfs did not produce initrd.img" >&2
+  exit 1
+fi
+ls -lh /boot/initrd.img-* 2>/dev/null
 apt-get clean
 rm -f /tmp/*.deb

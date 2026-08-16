@@ -76,8 +76,8 @@ jobs:
           cp arch/arm64/boot/Image ../out/
           cp arch/arm64/boot/dts/qcom/msm8953-samsung-c7lte.dtb ../out/
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            bindeb-pkg -j$(nproc) || echo "bindeb-pkg 失败，继续用已编译 Image"
-          cp -f ../linux-image-*.deb ../linux-headers-*.deb ../out/ 2>/dev/null || true
+            bindeb-pkg -j$(nproc)
+          cp -f ../linux-image-*.deb ../linux-headers-*.deb ../out/
 
       - name: Extract C7 vendor firmware
         run: |
@@ -124,7 +124,7 @@ jobs:
               cp -r firmware-c7/* mp/lib/firmware/ 2>/dev/null || true
             fi
             shopt -s nullglob
-            cp out/*.deb mp/tmp/ 2>/dev/null || true
+            cp out/*.deb mp/tmp/
             cp scripts/configure-chroot.sh mp/configure-chroot.sh
             DISTRO="$1" chroot mp /bin/bash /configure-chroot.sh
             cp mp/boot/initrd.img* out/ 2>/dev/null || true
@@ -137,14 +137,12 @@ jobs:
           set -e
           KIMG=out/Image
           DTB=out/msm8953-samsung-c7lte.dtb
-          INITRD=$(ls out/initrd.img* 2>/dev/null | head -1)
-          if [ -n "$INITRD" ]; then
-            RAMDISK="$INITRD"
-          else
-            mkdir -p emptyram
-            ( cd emptyram && find . -print0 | cpio --null -o --format=newc | gzip -9 ) > out/initrd-empty.img
-            RAMDISK=out/initrd-empty.img
+          INITRD=$(ls out/initrd.img-* 2>/dev/null | head -1)
+          if [ -z "$INITRD" ] || [ ! -s "$INITRD" ]; then
+            echo "ERROR: no valid initrd.img found (chroot update-initramfs failed)" >&2
+            exit 1
           fi
+          RAMDISK="$INITRD"
           # 用 rootfs.img 的真实 UUID 作为启动参数
           ROOT_UUID=$(/sbin/blkid -o value -s UUID rootfs.img)
           echo "rootfs UUID: $ROOT_UUID"
