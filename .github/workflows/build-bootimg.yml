@@ -50,8 +50,8 @@ jobs:
 
       - name: Copy C7 device tree + kernel config
         run: |
-          cp device-dts/qcom/msm8953.dtsi linux/arch/arm64/boot/dts/qcom/
-          cp device-dts/qcom/pm8953.dtsi linux/arch/arm64/boot/dts/qcom/
+          # 只拷贝 C7 板级 dts。msm8953.dtsi/pm8953.dtsi 用内核原版，
+          # 否则会破坏其他设备 dtb（缺 sound_card/wcd_codec/zap_shader）导致 bindeb-pkg 编译失败
           cp device-dts/qcom/msm8953-samsung-c7lte.dts linux/arch/arm64/boot/dts/qcom/
           if ! grep -q "msm8953-samsung-c7lte" linux/arch/arm64/boot/dts/qcom/Makefile; then
             sed -i '/msm8953-motorola-potter.dtb/a\dtb-$(CONFIG_ARCH_QCOM)\t+= msm8953-samsung-c7lte.dtb' \
