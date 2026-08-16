@@ -27,20 +27,20 @@ apt-get install -y \
   python3 iptables rfkill alsa-ucm-conf \
   u-boot-tools zstd
 
-shopt -s nullglob
-for f in /tmp/linux-image-*.deb; do
-  case "$f" in *dbg*) continue;; esac
-  dpkg -i "$f" || apt-get -f install -y
-done
+# 直接拷入的内核：vmlinuz-<ver> + dtb-<ver> + /lib/modules/<ver>
+# 为 initramfs 生成 modules.dep
+depmod -a 2>/dev/null || true
 
 # 确保内核已安装，否则 update-initramfs 无内核可用
 if ! ls /boot/vmlinuz-* >/dev/null 2>&1; then
   echo "ERROR: no kernel installed in chroot" >&2
-  ls /tmp/*.deb >&2 2>/dev/null || true
+  ls /boot >&2
   exit 1
 fi
 
-update-initramfs -u
+# 显式指定内核版本（qemu chroot 中 uname 是 host 的，不能依赖 -u 默认值）
+KVER="${KVER:-$(ls /boot/vmlinuz-* | sed 's/.*vmlinuz-//' | head -1)}"
+update-initramfs -u -k "$KVER"
 if ! ls /boot/initrd.img-* >/dev/null 2>&1; then
   echo "ERROR: update-initramfs did not produce initrd.img" >&2
   exit 1

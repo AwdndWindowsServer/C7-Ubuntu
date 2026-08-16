@@ -67,7 +67,7 @@ jobs:
           cd linux
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
-      - name: Build kernel (Image + dtb + deb)
+      - name: Build kernel (Image + dtb + modules)
         run: |
           cd linux
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
@@ -76,9 +76,12 @@ jobs:
           mkdir -p ../out
           cp arch/arm64/boot/Image ../out/
           cp arch/arm64/boot/dts/qcom/msm8953-samsung-c7lte.dtb ../out/
+          # 编译并收集内核模块，安装到 rootfs 用（绕开交叉 deb 构建）
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules
+          rm -rf ../out/modules-install
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            bindeb-pkg -j$(nproc)
-          cp -f ../linux-image-*.deb ../linux-headers-*.deb ../out/
+            INSTALL_MOD_PATH=../out/modules-install modules_install
+          ls -la ../out/modules-install/lib/modules/
 
       - name: Extract C7 vendor firmware
         run: |
@@ -125,11 +128,19 @@ jobs:
               cp -r firmware-c7/* mp/lib/firmware/ 2>/dev/null || true
             fi
             shopt -s nullglob
-            cp out/*.deb mp/tmp/
+            # 直接安装内核 Image + dtb + modules（绕开 deb 构建）
+            KVER=$(ls out/modules-install/lib/modules/ 2>/dev/null | head -1)
+            if [ -z "$KVER" ]; then
+              echo "ERROR: no kernel modules installed" >&2
+              exit 1
+            fi
+            echo "kernel version: $KVER"
+            cp -r out/modules-install/lib/modules/* mp/lib/modules/
+            cp out/Image mp/boot/vmlinuz-$KVER
+            cp out/msm8953-samsung-c7lte.dtb mp/boot/dtb-$KVER
             cp scripts/configure-chroot.sh mp/configure-chroot.sh
-            DISTRO="$1" chroot mp /bin/bash /configure-chroot.sh
-            cp mp/boot/initrd.img* out/ 2>/dev/null || true
-            cp -r mp/boot/vmlinuz* out/ 2>/dev/null || true
+            KVER="$KVER" DISTRO="$1" chroot mp /bin/bash /configure-chroot.sh
+            cp mp/boot/initrd.img-* out/ 2>/dev/null || true
             umount mp/sys mp/dev/pts mp/dev mp/proc mp
           ' _ "${{ inputs.distro }}"
 
