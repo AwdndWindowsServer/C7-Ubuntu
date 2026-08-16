@@ -137,16 +137,16 @@ jobs:
           # extlinux 配置
           sudo mkdir -p bmnt/extlinux
           sudo tee bmnt/extlinux/extlinux.conf > /dev/null << EOF
-timeout 1
-default Debian
-menu title boot prev kernel
+          timeout 1
+          default Debian
+          menu title boot prev kernel
 
-label Debian
-	kernel /vmlinuz-$KVER
-	fdtdir /
-	initrd /initrd.img-$KVER
-	append console=tty0 root=UUID=$ROOT_UUID rw loglevel=3 splash
-EOF
+          label Debian
+          	kernel /vmlinuz-$KVER
+          	fdtdir /
+          	initrd /initrd.img-$KVER
+          	append console=tty0 root=UUID=$ROOT_UUID rw loglevel=3 splash
+          EOF
           sudo umount bmnt
           # 转换 sparse 格式
           img2simg bootfs.img out/bootfs-simg.img
