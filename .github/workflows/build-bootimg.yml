@@ -1,23 +1,17 @@
-name: Build C7 bootfs (extlinux) one-shot
+name: Build C7 Debian (Full)
 
 on:
   workflow_dispatch:
     inputs:
-      kernel_branch:
-        description: 'msm8953-mainline kernel branch'
-        required: false
-        default: '6.16.3/main'
-        type: string
-      distro:
-        description: 'Ubuntu codename (rootfs base)'
-        required: false
-        default: 'resolute'
-        type: string
       rootfs_uuid:
-        description: 'Your rootfs.img UUID (run: blkid rootfs.img). Leave empty to use placeholder.'
+        description: 'rootfs.img UUID (blkid rootfs.img). Leave empty for placeholder.'
         required: false
         default: ''
-        type: string
+
+env:
+  KERNEL_REPO: https://github.com/msm8953-mainline/linux
+  KERNEL_BRANCH: msm8953-6.16.3-main
+  MIRROR: https://mirrors.tuna.tsinghua.edu.cn/debian/
 
 jobs:
   build:
@@ -39,19 +33,16 @@ jobs:
             android-sdk-libsparse-utils \
             zstd xz-utils rsync
           sudo apt-get install -y python3 python3-mako
-          # 注册 arm64 binfmt，chroot 时才能执行 aarch64 二进制
           sudo update-binfmts --enable qemu-aarch64 2>/dev/null || true
           sudo systemctl restart binfmt-support 2>/dev/null || true
 
-      - name: Clone msm8953-mainline kernel
+      - name: Clone kernel
         run: |
-          git clone --depth 1 -b "${{ inputs.kernel_branch }}" \
-            https://github.com/msm8953-mainline/linux.git linux
+          git clone --depth 1 -b "${{ env.KERNEL_BRANCH }}" \
+            ${{ env.KERNEL_REPO }} linux
 
-      - name: Copy C7 device tree + kernel config
+      - name: Build kernel (Image + dtb + deb)
         run: |
-          # 只拷贝 C7 板级 dts。msm8953.dtsi/pm8953.dtsi 用内核原版，
-          # 否则会破坏其他设备 dtb（缺 sound_card/wcd_codec/zap_shader）导致 bindeb-pkg 编译失败
           cp device-dts/qcom/msm8953-samsung-c7lte.dts linux/arch/arm64/boot/dts/qcom/
           if ! grep -q "msm8953-samsung-c7lte" linux/arch/arm64/boot/dts/qcom/Makefile; then
             sed -i '/msm8953-motorola-potter.dtb/a\dtb-$(CONFIG_ARCH_QCOM)\t+= msm8953-samsung-c7lte.dtb' \
@@ -61,81 +52,84 @@ jobs:
             config/msm8953-mainline.config > linux/.config
           cd linux
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-
-      - name: Build kernel Image + dtb + deb
-        run: |
-          cd linux
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             qcom/msm8953-samsung-c7lte.dtb
           mkdir -p ../out
           cp arch/arm64/boot/Image ../out/
           cp arch/arm64/boot/dts/qcom/msm8953-samsung-c7lte.dtb ../out/
-          # 跳过 linux-headers 构建，绕开 libssl-dev:arm64 交叉依赖（mido 方案）
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             DEB_BUILD_PROFILES=pkg.linux-upstream.nokernelheaders \
             bindeb-pkg -j$(nproc)
           cp -f ../linux-image-*.deb ../out/ 2>/dev/null || true
           ls -lh ../out/
 
-      - name: Create chroot (debootstrap Ubuntu)
+      - name: Build rootfs (Debian bookworm arm64)
         run: |
           set -e
-          mkdir -p mp
-          # chroot 执行 arm64 二进制需要 qemu 静态模拟器
-          sudo mkdir -p mp/usr/bin
-          sudo cp /usr/bin/qemu-aarch64-static mp/usr/bin/ 2>/dev/null || \
-            sudo cp /usr/bin/qemu-aarch64 mp/usr/bin/qemu-aarch64-static
-          echo "debootstrap: ubuntu ${{ inputs.distro }} arm64 (tuna)"
+          dd if=/dev/zero of=rootfs.img bs=1M count=4096
+          mkfs.ext4 -F rootfs.img
+          mkdir -p rootfs
+          sudo mount rootfs.img rootfs
+          sudo mkdir -p rootfs/usr/bin
+          sudo cp /usr/bin/qemu-aarch64-static rootfs/usr/bin/
+
+          echo "=== debootstrap bookworm arm64 ==="
           sudo debootstrap --foreign --arch arm64 \
-            --components=main,restricted,universe,multiverse \
             --variant=minbase \
-            ${{ inputs.distro }} ./mp \
-            https://mirrors.tuna.tsinghua.edu.cn/ubuntu/
-          # 第二阶段：在 chroot 内用 qemu 完成配置
-          sudo chroot mp /debootstrap/debootstrap --second-stage
+            bookworm ./rootfs ${{ env.MIRROR }}
+          sudo chroot rootfs /debootstrap/debootstrap --second-stage
 
-      - name: Configure chroot (install kernel + initramfs)
-        run: |
-          sudo bash -c '
+          echo "=== install kernel + initramfs ==="
+          sudo cp out/*.deb rootfs/tmp/
+          sudo chroot rootfs /bin/bash -c '
             set -e
-            mount --bind /proc mp/proc
-            mount --bind /dev mp/dev
-            mount --bind /dev/pts mp/dev/pts
-            mount --bind /sys mp/sys
-            shopt -s nullglob
-            cp out/*.deb mp/tmp/
-            cp scripts/configure-chroot.sh mp/configure-chroot.sh
-            DISTRO="$1" chroot mp /bin/bash /configure-chroot.sh
-            cp mp/boot/initrd.img-* out/ 2>/dev/null || true
-            KVER=$(ls mp/boot/vmlinuz-* | sed "s/.*vmlinuz-//" | head -1)
-            echo "kernel version: $KVER"
-            umount mp/sys mp/dev/pts mp/dev mp/proc
-          ' _ "${{ inputs.distro }}"
+            dpkg -i /tmp/linux-image-*.deb
+            update-initramfs -c -k $(ls /boot/vmlinuz-* | sed "s|.*vmlinuz-||")
+          '
+          # copy kernel files out before umount (for bootfs)
+          sudo cp rootfs/boot/vmlinuz-* out/ 2>/dev/null || true
+          sudo cp rootfs/boot/initrd.img-* out/ 2>/dev/null || true
 
-      - name: Build bootfs.img (extlinux)
+          echo "=== configure rootfs ==="
+          sudo chroot rootfs /bin/bash -c '
+            set -e
+            echo "c7ltechn" > /etc/hostname
+            echo "root:root" | chpasswd
+            echo "nameserver 8.8.8.8" > /etc/resolv.conf
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              systemd-sysv init openssh-server \
+              wpasupplicant network-manager \
+              linux-firmware firmware-linux-free
+            systemctl enable ssh
+            apt-get clean
+          '
+
+          sudo umount rootfs
+          img2simg rootfs.img out/rootfs-simg.img
+          ls -lh out/rootfs-simg.img
+
+      - name: Build bootfs (extlinux)
         run: |
           set -e
-          KVER=$(ls mp/boot/vmlinuz-* | sed 's/.*vmlinuz-//' | head -1)
+          KVER=$(ls out/vmlinuz-* | sed 's|.*/vmlinuz-||' | head -1)
           echo "KVER=$KVER"
-          # rootfs UUID：用输入值或占位符
           ROOT_UUID="${{ inputs.rootfs_uuid }}"
           if [ -z "$ROOT_UUID" ]; then
             ROOT_UUID="REPLACE_WITH_YOUR_ROOTFS_UUID"
           fi
-          echo "rootfs UUID: $ROOT_UUID"
-          # 创建 bootfs 镜像（ext2，刷到 system 分区）
+          echo "rootfs UUID=$ROOT_UUID"
+
           dd if=/dev/zero of=bootfs.img bs=1M count=256
           mkfs.ext2 bootfs.img
           mkdir -p bmnt
           sudo mount bootfs.img bmnt
-          sudo cp mp/boot/vmlinuz-$KVER bmnt/
-          sudo cp mp/boot/initrd.img-$KVER bmnt/
-          # dtb 放到 qcom/ 子目录（lk2nd dtb-files 需要匹配）
+          sudo cp out/vmlinuz-$KVER bmnt/
+          sudo cp out/initrd.img-$KVER bmnt/
           sudo mkdir -p bmnt/qcom
-          sudo cp mp/usr/lib/linux-image-*/qcom/msm8953-samsung-c7lte.dtb bmnt/qcom/msm8953-samsung-c7lte-mainline.dtb 2>/dev/null || \
-            sudo cp out/msm8953-samsung-c7lte.dtb bmnt/qcom/msm8953-samsung-c7lte-mainline.dtb
-          # extlinux 配置
+          sudo cp out/msm8953-samsung-c7lte.dtb bmnt/qcom/msm8953-samsung-c7lte-mainline.dtb
+
           sudo mkdir -p bmnt/extlinux
           sudo tee bmnt/extlinux/extlinux.conf > /dev/null << EOF
           timeout 1
@@ -149,15 +143,16 @@ jobs:
           	append console=tty0 root=UUID=$ROOT_UUID rw loglevel=3 splash
           EOF
           sudo umount bmnt
-          # 转换 sparse 格式
           img2simg bootfs.img out/bootfs-simg.img
           ls -lh out/bootfs-simg.img
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: c7-bootfs-${{ inputs.distro }}
+          name: c7-debian-full
           path: |
             out/bootfs-simg.img
+            out/rootfs-simg.img
             out/msm8953-samsung-c7lte.dtb
             out/linux-image-*.deb
+          retention-days: 30
