@@ -1,192 +1,163 @@
-name: Build Ubuntu 26.04 for SM-C7000 (Full)
+name: Build C7 bootfs (extlinux) one-shot
 
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: 'Release Tag'
+      kernel_branch:
+        description: 'msm8953-mainline kernel branch'
         required: false
-        default: 'ubuntu-26.04-c7ltechn-v1.0'
-
-env:
-  KERNEL_REPO: https://github.com/msm8953-mainline/linux
-  KERNEL_BRANCH: msm8953-6.12
-  LK2ND_REPO: https://github.com/msm8953-mainline/lk2nd
+        default: '6.16.3/main'
+        type: string
+      distro:
+        description: 'Ubuntu codename (rootfs base)'
+        required: false
+        default: 'resolute'
+        type: string
+      rootfs_uuid:
+        description: 'Your rootfs.img UUID (run: blkid rootfs.img). Leave empty to use placeholder.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    # ============================================================
-    # 1. 安装依赖
-    # ============================================================
-    - name: Install Dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y \
-          debootstrap qemu-user-static binfmt-support \
-          bison flex gcc-aarch64-linux-gnu pkg-config \
-          libncurses-dev libssl-dev unzip git \
-          android-sdk-libsparse-utils \
-          wget file dosfstools e2fsprogs \
-          make python3 bc cpio rsync kmod \
-          device-tree-compiler python3-pyelftools
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu device-tree-compiler \
+            bison flex libssl-dev libdw-dev libelf-dev dpkg-dev \
+            build-essential debhelper \
+            fakeroot bc kmod cpio \
+            debootstrap qemu-user-static binfmt-support \
+            android-sdk-libsparse-utils \
+            zstd xz-utils rsync
+          sudo apt-get install -y python3 python3-mako
+          # 注册 arm64 binfmt，chroot 时才能执行 aarch64 二进制
+          sudo update-binfmts --enable qemu-aarch64 2>/dev/null || true
+          sudo systemctl restart binfmt-support 2>/dev/null || true
 
-    # ============================================================
-    # 3. 编译主线内核
-    # ============================================================
-    - name: Build Kernel
-      run: |
-        git clone --depth 1 $KERNEL_REPO -b ${{ env.KERNEL_BRANCH }}
-        cd linux
-        # 使用 msm8953 通用配置，后续可替换为 c7ltechn 专用 defconfig
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-             msm8953_defconfig
-        # 启用必要选项（Ubuntu 兼容）
-        scripts/config -e CONFIG_DEVTMPFS \
-                       -e CONFIG_DEVTMPFS_MOUNT \
-                       -e CONFIG_NAMESPACES \
-                       -e CONFIG_CGROUPS \
-                       -e CONFIG_OVERLAY_FS \
-                       -e CONFIG_SQUASHFS \
-                       -e CONFIG_DRM_PANEL_SAMSUNG_S6E3FA3 \
-                       -e CONFIG_TOUCHSCREEN_MELFAS_MMS449
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-             -j$(nproc) Image.gz dtbs modules
-        # 复制产物
-        cp arch/arm64/boot/Image.gz ../
-        cp arch/arm64/boot/dts/qcom/msm8953-samsung-c7lte*.dtb ../dtb 2>/dev/null || \
-        cp arch/arm64/boot/dts/qcom/msm8953*.dtb ../
+      - name: Clone msm8953-mainline kernel
+        run: |
+          git clone --depth 1 -b "${{ inputs.kernel_branch }}" \
+            https://github.com/msm8953-mainline/linux.git linux
 
-    # ============================================================
-    # 4. 构建 Ubuntu 26.04 RootFS
-    # ============================================================
-    - name: Build Ubuntu RootFS
-      run: |
-        # 创建 4GB 镜像
-        dd if=/dev/zero of=rootfs.img bs=1G count=4
-        mkfs.ext4 -F rootfs.img
-        mkdir -p ./rootfs
-        sudo mount rootfs.img ./rootfs
+      - name: Copy C7 device tree + kernel config
+        run: |
+          # 只拷贝 C7 板级 dts。msm8953.dtsi/pm8953.dtsi 用内核原版，
+          # 否则会破坏其他设备 dtb（缺 sound_card/wcd_codec/zap_shader）导致 bindeb-pkg 编译失败
+          cp device-dts/qcom/msm8953-samsung-c7lte.dts linux/arch/arm64/boot/dts/qcom/
+          if ! grep -q "msm8953-samsung-c7lte" linux/arch/arm64/boot/dts/qcom/Makefile; then
+            sed -i '/msm8953-motorola-potter.dtb/a\dtb-$(CONFIG_ARCH_QCOM)\t+= msm8953-samsung-c7lte.dtb' \
+              linux/arch/arm64/boot/dts/qcom/Makefile
+          fi
+          sed 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="-c7-mainline"/' \
+            config/msm8953-mainline.config > linux/.config
+          cd linux
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
-        # debootstrap 第一阶段
-        sudo debootstrap --arch arm64 \
-          --foreign \
-          --include=systemd,udev,netplan.io,openssh-server,ca-certificates,gnupg \
-          resolute ./rootfs \
-          https://mirrors.tuna.tsinghua.edu.cn/ubuntu/
+      - name: Build kernel Image + dtb + deb
+        run: |
+          cd linux
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            qcom/msm8953-samsung-c7lte.dtb
+          mkdir -p ../out
+          cp arch/arm64/boot/Image ../out/
+          cp arch/arm64/boot/dts/qcom/msm8953-samsung-c7lte.dtb ../out/
+          # 跳过 linux-headers 构建，绕开 libssl-dev:arm64 交叉依赖（mido 方案）
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            DEB_BUILD_PROFILES=pkg.linux-upstream.nokernelheaders \
+            bindeb-pkg -j$(nproc)
+          cp -f ../linux-image-*.deb ../out/ 2>/dev/null || true
+          ls -lh ../out/
 
-        # 复制 QEMU 并执行第二阶段
-        sudo cp /usr/bin/qemu-aarch64-static ./rootfs/usr/bin/
-        sudo chroot ./rootfs /bin/bash -c "
-          /debootstrap/debootstrap --second-stage
-          echo 'nameserver 8.8.8.8' > /etc/resolv.conf
-          echo 'nameserver 1.1.1.1' >> /etc/resolv.conf
-          echo 'ubuntu-c7ltechn' > /etc/hostname
-          echo 'root:ubuntu' | chpasswd
-          apt update
-          apt install -y linux-firmware wpasupplicant network-manager
-        "
+      - name: Create chroot (debootstrap Ubuntu)
+        run: |
+          set -e
+          mkdir -p mp
+          # chroot 执行 arm64 二进制需要 qemu 静态模拟器
+          sudo mkdir -p mp/usr/bin
+          sudo cp /usr/bin/qemu-aarch64-static mp/usr/bin/ 2>/dev/null || \
+            sudo cp /usr/bin/qemu-aarch64 mp/usr/bin/qemu-aarch64-static
+          echo "debootstrap: ubuntu ${{ inputs.distro }} arm64 (tuna)"
+          sudo debootstrap --foreign --arch arm64 \
+            --components=main,restricted,universe,multiverse \
+            --variant=minbase \
+            ${{ inputs.distro }} ./mp \
+            https://mirrors.tuna.tsinghua.edu.cn/ubuntu/
+          # 第二阶段：在 chroot 内用 qemu 完成配置
+          sudo chroot mp /debootstrap/debootstrap --second-stage
 
-        # 配置网络
-        sudo tee ./rootfs/etc/netplan/01-netcfg.yaml > /dev/null << 'EOF'
-        network:
-          version: 2
-          ethernets:
-            wlan0:
-              dhcp4: true
-              optional: true
-        EOF
+      - name: Configure chroot (install kernel + initramfs)
+        run: |
+          sudo bash -c '
+            set -e
+            mount --bind /proc mp/proc
+            mount --bind /dev mp/dev
+            mount --bind /dev/pts mp/dev/pts
+            mount --bind /sys mp/sys
+            shopt -s nullglob
+            cp out/*.deb mp/tmp/
+            cp scripts/configure-chroot.sh mp/configure-chroot.sh
+            DISTRO="$1" chroot mp /bin/bash /configure-chroot.sh
+            cp mp/boot/initrd.img-* out/ 2>/dev/null || true
+            KVER=$(ls mp/boot/vmlinuz-* | sed "s/.*vmlinuz-//" | head -1)
+            echo "kernel version: $KVER"
+            umount mp/sys mp/dev/pts mp/dev mp/proc
+          ' _ "${{ inputs.distro }}"
 
-        # 安装内核模块到 rootfs
-        sudo cp -r ./linux/modules/lib/modules ./rootfs/lib/
+      - name: Build bootfs.img (extlinux)
+        run: |
+          set -e
+          KVER=$(ls mp/boot/vmlinuz-* | sed 's/.*vmlinuz-//' | head -1)
+          echo "KVER=$KVER"
+          # rootfs UUID：用输入值或占位符
+          ROOT_UUID="${{ inputs.rootfs_uuid }}"
+          if [ -z "$ROOT_UUID" ]; then
+            ROOT_UUID="REPLACE_WITH_YOUR_ROOTFS_UUID"
+          fi
+          echo "rootfs UUID: $ROOT_UUID"
+          # 创建 bootfs 镜像（ext2，刷到 system 分区）
+          dd if=/dev/zero of=bootfs.img bs=1M count=256
+          mkfs.ext2 bootfs.img
+          mkdir -p bmnt
+          sudo mount bootfs.img bmnt
+          sudo cp mp/boot/vmlinuz-$KVER bmnt/
+          sudo cp mp/boot/initrd.img-$KVER bmnt/
+          # dtb 放到 qcom/ 子目录（lk2nd dtb-files="qcom/..."，搜索路径需要 qcom/ 前缀）
+          mkdir -p bmnt/qcom
+          sudo cp mp/usr/lib/linux-image-*/qcom/msm8953-samsung-c7lte.dtb bmnt/qcom/ 2>/dev/null || \
+            sudo cp out/msm8953-samsung-c7lte.dtb bmnt/qcom/
+          # extlinux 配置
+          sudo mkdir -p bmnt/extlinux
+          sudo tee bmnt/extlinux/extlinux.conf > /dev/null << EOF
+          timeout 1
+          default Debian
+          menu title boot prev kernel
 
-        # 卸载
-        sudo umount ./rootfs
+          label Debian
+          	kernel /vmlinuz-$KVER
+          	fdtdir /
+          	initrd /initrd.img-$KVER
+          	append console=tty0 root=UUID=$ROOT_UUID rw loglevel=3 splash
+          EOF
+          sudo umount bmnt
+          # 转换 sparse 格式
+          img2simg bootfs.img out/bootfs-simg.img
+          ls -lh out/bootfs-simg.img
 
-    # ============================================================
-    # 5. 打包刷机文件（boot.img 格式）
-    # ============================================================
-    - name: Create Boot Image (boot.img)
-      run: |
-        # 创建 boot 分区镜像（内核 + dtb + initrd 暂空）
-        mkdir -p boot_ramdisk
-        cd boot_ramdisk
-        echo "initrd placeholder" > initrd
-        find . | cpio -o -H newc | gzip > ../initrd.img
-
-        # 使用 mkbootimg 打包（Android 格式）
-        mkbootimg \
-          --kernel ../Image.gz \
-          --ramdisk ../initrd.img \
-          --dtb ../dtb \
-          --base 0x80000000 \
-          --pagesize 2048 \
-          --kernel_offset 0x8000 \
-          --ramdisk_offset 0x01000000 \
-          --tags_offset 0x00000100 \
-          -o ../boot.img
-
-    # ============================================================
-    # 6. 打包最终产物
-    # ============================================================
-    - name: Package Release
-      run: |
-        gzip -c rootfs.img > ubuntu-rootfs.img.gz
-        gzip -c boot.img > boot.img.gz
-        gzip -c lk2nd.img > lk2nd.img.gz
-
-        cat > README.txt << 'EOF'
-        ======================================================
-        Ubuntu 26.04 for Samsung Galaxy C7 (SM-C7000)
-        ======================================================
-
-        刷机方法（需先刷入 lk2nd）：
-        1. 通过 Odin/Heimdall 刷入 lk2nd.tar.md5 到 AP/BL 插槽
-        2. 重启进入 lk2nd (音量下)
-        3. fastboot flash system ubuntu-rootfs.img.gz (需解压)
-        4. fastboot flash boot boot.img
-
-        默认密码：root / ubuntu
-
-        GitHub: https://github.com/你的用户名/你的仓库
-        ======================================================
-        EOF
-
-        # 生成 md5 文件供 Odin
-        md5sum -b lk2nd.img > lk2nd.img.md5
-        cat lk2nd.img.md5 >> lk2nd.img
-        mv lk2nd.img lk2nd.img.tar
-        mv lk2nd.img.tar lk2nd.tar.md5
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ubuntu-c7ltechn-full
-        path: |
-          ubuntu-rootfs.img.gz
-          boot.img.gz
-          lk2nd.tar.md5
-          lk2nd.img.gz
-          README.txt
-        retention-days: 30
-
-    - name: Create Release
-      if: github.event_name == 'workflow_dispatch'
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: ${{ github.event.inputs.release_tag }}
-        name: ${{ github.event.inputs.release_tag }}
-        draft: false
-        prerelease: true
-        files: |
-          ubuntu-rootfs.img.gz
-          boot.img.gz
-          lk2nd.tar.md5
-          lk2nd.img.gz
-          README.txt
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: c7-bootfs-${{ inputs.distro }}
+          path: |
+            out/bootfs-simg.img
+            out/msm8953-samsung-c7lte.dtb
+            out/linux-image-*.deb
