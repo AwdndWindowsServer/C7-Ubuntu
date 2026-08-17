@@ -10,7 +10,7 @@ on:
 
 env:
   KERNEL_REPO: https://github.com/msm8953-mainline/linux
-  KERNEL_BRANCH: msm8953-6.16.3-main
+  KERNEL_BRANCH: 6.16.3/main
   MIRROR: https://mirrors.tuna.tsinghua.edu.cn/debian/
 
 jobs:
