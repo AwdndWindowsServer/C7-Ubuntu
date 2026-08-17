@@ -36,23 +36,6 @@ jobs:
           device-tree-compiler python3-pyelftools
 
     # ============================================================
-    # 2. 编译 lk2nd（二级引导，提供 Fastboot）
-    # ============================================================
-    - name: Build lk2nd
-      run: |
-        git clone --depth 1 $LK2ND_REPO -b ${{ env.LK2ND_BRANCH }}
-        cd lk2nd
-        # 针对 SM-C7000 修改设备树（如果有专用 dts 则替换）
-        # 这里使用 msm8953 通用配置
-        make TOOLCHAIN_PREFIX=aarch64-linux-gnu- \
-             TARGET=msm8953 \
-             EMMC_BOOT=1 \
-             SIGNING_ENABLE=0 \
-             VERIFIED_BOOT=0 \
-             lk2nd.img -j$(nproc)
-        cp lk2nd.img ../
-
-    # ============================================================
     # 3. 编译主线内核
     # ============================================================
     - name: Build Kernel
