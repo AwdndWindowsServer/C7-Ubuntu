@@ -133,8 +133,8 @@ jobs:
           sudo cp mp/boot/initrd.img-$KVER bmnt/
           # dtb 放到 qcom/ 子目录（lk2nd dtb-files 需要匹配）
           sudo mkdir -p bmnt/qcom
-          sudo cp mp/usr/lib/linux-image-*/qcom/msm8953-samsung-c7lte.dtb bmnt/qcom/ 2>/dev/null || \
-            sudo cp out/msm8953-samsung-c7lte.dtb bmnt/qcom/
+          sudo cp mp/usr/lib/linux-image-*/qcom/msm8953-samsung-c7lte.dtb bmnt/qcom/msm8953-samsung-c7lte-mainline.dtb 2>/dev/null || \
+            sudo cp out/msm8953-samsung-c7lte.dtb bmnt/qcom/msm8953-samsung-c7lte-mainline.dtb
           # extlinux 配置
           sudo mkdir -p bmnt/extlinux
           sudo tee bmnt/extlinux/extlinux.conf > /dev/null << EOF
