@@ -131,9 +131,10 @@ jobs:
           sudo mount bootfs.img bmnt
           sudo cp mp/boot/vmlinuz-$KVER bmnt/
           sudo cp mp/boot/initrd.img-$KVER bmnt/
-          # dtb 放到 bootfs 根目录（fdtdir /）
-          sudo cp mp/usr/lib/linux-image-*/qcom/msm8953-samsung-c7lte.dtb bmnt/ 2>/dev/null || \
-            sudo cp out/msm8953-samsung-c7lte.dtb bmnt/
+          # dtb 放到 qcom/ 子目录（lk2nd dtb-files="qcom/..."，搜索路径需要 qcom/ 前缀）
+          mkdir -p bmnt/qcom
+          sudo cp mp/usr/lib/linux-image-*/qcom/msm8953-samsung-c7lte.dtb bmnt/qcom/ 2>/dev/null || \
+            sudo cp out/msm8953-samsung-c7lte.dtb bmnt/qcom/
           # extlinux 配置
           sudo mkdir -p bmnt/extlinux
           sudo tee bmnt/extlinux/extlinux.conf > /dev/null << EOF
