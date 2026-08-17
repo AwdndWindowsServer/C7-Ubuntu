@@ -1,4 +1,4 @@
-name: Build C7 Debian (Full)
+name: Build C7 Ubuntu (Full)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
 env:
   KERNEL_REPO: https://github.com/msm8953-mainline/linux
   KERNEL_BRANCH: 6.16.3/main
-  MIRROR: https://mirrors.tuna.tsinghua.edu.cn/debian/
+  MIRROR: https://mirrors.tuna.tsinghua.edu.cn/ubuntu/
 
 jobs:
   build:
@@ -64,7 +64,7 @@ jobs:
           cp -f ../linux-image-*.deb ../out/ 2>/dev/null || true
           ls -lh ../out/
 
-      - name: Build rootfs (Debian bookworm arm64)
+      - name: Build rootfs (Ubuntu resolute arm64)
         run: |
           set -e
           dd if=/dev/zero of=rootfs.img bs=1M count=4096
@@ -74,10 +74,11 @@ jobs:
           sudo mkdir -p rootfs/usr/bin
           sudo cp /usr/bin/qemu-aarch64-static rootfs/usr/bin/
 
-          echo "=== debootstrap bookworm arm64 ==="
+          echo "=== debootstrap resolute (ubuntu 26.04) arm64 ==="
           sudo debootstrap --foreign --arch arm64 \
+            --components=main,restricted,universe,multiverse \
             --variant=minbase \
-            bookworm ./rootfs ${{ env.MIRROR }}
+            resolute ./rootfs ${{ env.MIRROR }}
           sudo chroot rootfs /debootstrap/debootstrap --second-stage
 
           echo "=== install kernel + initramfs ==="
@@ -103,7 +104,7 @@ jobs:
             apt-get install -y --no-install-recommends \
               systemd-sysv init openssh-server \
               wpasupplicant network-manager \
-              firmware-linux-free firmware-linux-nonfree
+              linux-firmware
             systemctl enable ssh
             apt-get clean
           '
@@ -135,10 +136,10 @@ jobs:
           sudo mkdir -p bmnt/extlinux
           sudo tee bmnt/extlinux/extlinux.conf > /dev/null << EOF
           timeout 1
-          default Debian
+          default Ubuntu
           menu title boot prev kernel
 
-          label Debian
+          label Ubuntu
           	kernel /vmlinuz-$KVER
           	fdtdir /
           	initrd /initrd.img-$KVER
@@ -151,7 +152,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: c7-debian-full
+          name: c7-ubuntu-full
           path: |
             out/bootfs-simg.img
             out/rootfs-simg.img
