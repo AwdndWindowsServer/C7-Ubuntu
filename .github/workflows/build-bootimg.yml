@@ -84,6 +84,8 @@ jobs:
           sudo cp out/*.deb rootfs/tmp/
           sudo chroot rootfs /bin/bash -c '
             set -e
+            apt-get update
+            apt-get install -y initramfs-tools
             dpkg -i /tmp/linux-image-*.deb
             update-initramfs -c -k $(ls /boot/vmlinuz-* | sed "s|.*vmlinuz-||")
           '
