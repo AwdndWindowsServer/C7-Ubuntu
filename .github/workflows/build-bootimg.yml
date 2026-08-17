@@ -103,7 +103,7 @@ jobs:
             apt-get install -y --no-install-recommends \
               systemd-sysv init openssh-server \
               wpasupplicant network-manager \
-              linux-firmware firmware-linux-free
+              firmware-linux-free firmware-linux-nonfree
             systemctl enable ssh
             apt-get clean
           '
